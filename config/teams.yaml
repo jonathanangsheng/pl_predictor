@@ -1,0 +1,131 @@
+# Premier League clubs and the terms used to find and attribute tweets.
+#
+# - code:      three-letter code; matchday hashtags are built as #<HOME><AWAY> (e.g. #ARSMCI)
+# - hashtags:  club hashtags (without the #)
+# - handles:   official X accounts (without the @)
+# - keywords:  plain-text names/nicknames; matched on word boundaries, case-insensitive
+#
+# Club list reflects the 2026/27 season. Update it after promotion/relegation.
+# Avoid ambiguous keywords ("Blues", "Reds", "City", "United", "Forest", "Palace",
+# "Villa") - they pull unrelated tweets into the query and the attribution.
+
+teams:
+  - name: Arsenal
+    code: ARS
+    hashtags: [Arsenal, AFC, COYG]
+    handles: [Arsenal]
+    keywords: [Arsenal, Gunners]
+
+  - name: Aston Villa
+    code: AVL
+    hashtags: [AVFC, UTV]
+    handles: [AVFCOfficial]
+    keywords: [Aston Villa]
+
+  - name: Bournemouth
+    code: BOU
+    hashtags: [AFCB]
+    handles: [afcbournemouth]
+    keywords: [Bournemouth, Cherries]
+
+  - name: Brentford
+    code: BRE
+    hashtags: [BrentfordFC]
+    handles: [BrentfordFC]
+    keywords: [Brentford]
+
+  - name: Brighton
+    code: BHA
+    hashtags: [BHAFC]
+    handles: [OfficialBHAFC]
+    keywords: [Brighton, Seagulls]
+
+  - name: Chelsea
+    code: CHE
+    hashtags: [CFC, Chelsea]
+    handles: [ChelseaFC]
+    keywords: [Chelsea]
+
+  - name: Coventry City
+    code: COV
+    hashtags: [PUSB]
+    handles: [Coventry_City]
+    keywords: [Coventry]
+
+  - name: Crystal Palace
+    code: CRY
+    hashtags: [CPFC]
+    handles: [CPFC]
+    keywords: [Crystal Palace]
+
+  - name: Everton
+    code: EVE
+    hashtags: [EFC, COYB]
+    handles: [Everton]
+    keywords: [Everton, Toffees]
+
+  - name: Fulham
+    code: FUL
+    hashtags: [FFC, FulhamFC]
+    handles: [FulhamFC]
+    keywords: [Fulham, Cottagers]
+
+  - name: Hull City
+    code: HUL
+    hashtags: [hcafc]
+    handles: [HullCity]
+    keywords: [Hull City]
+
+  - name: Ipswich Town
+    code: IPS
+    hashtags: [ITFC]
+    handles: [IpswichTown]
+    keywords: [Ipswich, Tractor Boys]
+
+  - name: Leeds United
+    code: LEE
+    hashtags: [LUFC, MOT]
+    handles: [LUFC]
+    keywords: [Leeds]
+
+  - name: Liverpool
+    code: LIV
+    hashtags: [LFC, YNWA]
+    handles: [LFC]
+    keywords: [Liverpool]
+
+  - name: Manchester City
+    code: MCI
+    hashtags: [MCFC, ManCity]
+    handles: [ManCity]
+    keywords: [Man City, Manchester City]
+
+  - name: Manchester United
+    code: MUN
+    hashtags: [MUFC, GGMU]
+    handles: [ManUtd]
+    keywords: [Man Utd, Man United, Manchester United]
+
+  - name: Newcastle United
+    code: NEW
+    hashtags: [NUFC]
+    handles: [NUFC]
+    keywords: [Newcastle, Toon, Magpies]
+
+  - name: Nottingham Forest
+    code: NFO
+    hashtags: [NFFC]
+    handles: [NFFC]
+    keywords: [Nottingham Forest]
+
+  - name: Sunderland
+    code: SUN
+    hashtags: [SAFC]
+    handles: [SunderlandAFC]
+    keywords: [Sunderland, Black Cats]
+
+  - name: Tottenham Hotspur
+    code: TOT
+    hashtags: [THFC, COYS]
+    handles: [SpursOfficial]
+    keywords: [Tottenham, Spurs]

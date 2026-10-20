@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from .config import DEFAULT_MODEL
+from .config import DEFAULT_MODEL, ConfigError
 
 LABELS = ("negative", "neutral", "positive")
 # Models without named labels (e.g. cardiffnlp/twitter-roberta-base-sentiment) use LABEL_n.
@@ -48,6 +48,15 @@ class SentimentResult:
         return cls(**probs)
 
 
+def require_transformers() -> None:
+    try:
+        import transformers  # noqa: F401
+    except ImportError:
+        raise ConfigError(
+            'Scoring needs the sentiment extra: pip install -e ".[sentiment]"'
+        ) from None
+
+
 class SentimentScorer:
     """Batch scorer. The transformers pipeline is loaded lazily on first use."""
 
@@ -63,6 +72,7 @@ class SentimentScorer:
 
     def _get_pipeline(self) -> Callable:
         if self._pipeline is None:
+            require_transformers()
             from transformers import pipeline
 
             self._pipeline = pipeline(

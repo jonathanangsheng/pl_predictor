@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from .config import LOG_FORMAT, Settings
+from .config import LOG_FORMAT, Settings, require_token
 from .hooks import FPLHook
 from .predict import KEY, NoUpcomingFixtures, upcoming_fixtures
 
@@ -85,20 +85,14 @@ def _scorer(model_name: str):
 
 def collect_fixture(settings: Settings, row: pd.Series, now: datetime) -> int:
     """Upsert one FPL fixture into the sentiment DB, collect its tweets and score them."""
-    from .fixtures import Fixture
+    from .fixtures import fpl_fixture
     from .pipeline import collect_fixture as collect
     from .pipeline import score_pending
     from .storage import Store
 
-    if not settings.bearer_token:
-        raise RuntimeError("X_BEARER_TOKEN is not set")
-    teams = _teams(settings.teams_path)
-    fixture = Fixture(
-        fixture_id=f"mw{int(row['gameweek']):02d}-{row['home']}-{row['away']}".lower(),
-        matchweek=int(row["gameweek"]),
-        kickoff=row["kickoff"].to_pydatetime(),
-        home=teams[row["home"]],
-        away=teams[row["away"]],
+    kickoff = row["kickoff"].to_pydatetime()
+    fixture = fpl_fixture(
+        int(row["gameweek"]), kickoff, row["home"], row["away"], _teams(settings.teams_path)
     )
     store = Store(settings.db_path)
     store.conn.execute("PRAGMA busy_timeout = 30000")  # another reader/writer: wait, don't fail
@@ -127,6 +121,12 @@ def run(
 
         predict = lambda keys, now: predict_cmd(settings, only=keys, now=now)  # noqa: E731
     fpl = fpl or FPLHook()
+    if not dry_run and collect is collect_fixture:
+        # Fail now, not per fixture after its X reads are spent (test fakes need neither).
+        from .sentiment import require_transformers
+
+        require_token(settings)
+        require_transformers()
     if not dry_run:
         acquire_lock(lock)
     handled: set = set()  # keys collected and predicted, missed or failed: never retried
@@ -150,6 +150,15 @@ def run(
                             "(not eligible for the study)",
                             home,
                             away,
+                        )
+                    if fixtures is None and not fresh.empty:
+                        first = fresh.iloc[0]  # sorted by kickoff
+                        log.info(
+                            "Watching %d fixtures; next: %s v %s, collect at %s UTC",
+                            len(fresh),
+                            first["home"],
+                            first["away"],
+                            f"{first['kickoff'] - SLOT:%a %d %b %H:%M}",
                         )
                     fixtures, refreshed = fresh, now
             if fixtures is None:  # no successful FPL refresh yet

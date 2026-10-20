@@ -1,11 +1,10 @@
 import json
-from datetime import date
 
 import pandas as pd
 import pytest
 import requests
 
-from pl_predictor.hooks import ClubEloHook, FootballDataCoUkHook, FootballDataOrgHook, FPLHook
+from pl_predictor.hooks import FootballDataCoUkHook, FootballDataOrgHook, FPLHook
 
 
 class FakeSession:
@@ -96,25 +95,6 @@ def test_fpl_hook():
     assert row["minutes"] == 90 and row["fixtures"] == [61]
 
 
-CLUBELO_CSV = (
-    "Rank,Club,Country,Level,Elo,From,To\n"
-    "1,Arsenal,ENG,1,2051.3,2026-10-13,2026-10-17\n"
-    "2,Man City,ENG,1,2010.9,2026-10-13,2026-10-17\n"
-)
-
-
-def test_clubelo_ratings_and_history():
-    session = FakeSession({"/2026-10-18": CLUBELO_CSV, "/ManCity": CLUBELO_CSV})
-    hook = ClubEloHook(session=session)
-
-    df = hook.ratings(date(2026, 10, 18))
-    assert df.loc[0, "Club"] == "Arsenal" and df.loc[0, "Elo"] == 2051.3
-    assert df["From"].dtype.kind == "M"
-    assert hook.ratings("2026-10-18").shape == df.shape
-    hook.club_history("Man City")
-    assert session.calls[-1][0] == "http://api.clubelo.com/ManCity"
-
-
 def test_football_data_org_hook():
     standings = {
         "standings": [
@@ -148,3 +128,15 @@ def test_football_data_org_requires_token(monkeypatch):
 def test_http_errors_raise():
     with pytest.raises(requests.HTTPError):
         FPLHook(session=FakeSession({})).teams()
+
+
+def test_football_data_co_uk_upcoming_keeps_premier_league():
+    csv = (
+        "﻿Div,Date,Time,HomeTeam,AwayTeam,AvgH,AvgD,AvgA\n"
+        "E0,24/10/2026,15:00,Arsenal,Chelsea,1.9,3.6,4.2\n"
+        "E1,24/10/2026,15:00,Leicester,Derby,2.0,3.4,3.9\n"
+    )
+    session = FakeSession({"/fixtures.csv": csv.encode("utf-8")})
+    df = FootballDataCoUkHook(session=session).upcoming()
+    assert session.calls[0][0] == "https://www.football-data.co.uk/fixtures.csv"
+    assert list(df["HomeTeam"]) == ["Arsenal"] and df.loc[0, "Date"] == pd.Timestamp("2026-10-24")

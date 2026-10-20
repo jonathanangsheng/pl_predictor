@@ -173,10 +173,21 @@ class Store:
             df[col] = pd.to_datetime(df[col], utc=True, format="ISO8601")
         return df
 
+    def scored_with(self, model: str) -> bool:
+        """Whether any tweet was scored by `model` (e.g. demo.DEMO_MODEL)."""
+        sql = "SELECT 1 FROM sentiment WHERE model = ? LIMIT 1"
+        return self.conn.execute(sql, (model,)).fetchone() is not None
+
+    def scored_fixture_ids(self) -> set[str]:
+        sql = (
+            "SELECT DISTINCT t.fixture_id FROM tweets t JOIN sentiment s ON s.tweet_id = t.tweet_id"
+        )
+        return {r[0] for r in self.conn.execute(sql)}
+
     def tweets_frame(self) -> pd.DataFrame:
         """Scored tweets joined with their sentiment."""
         sql = (
-            "SELECT t.*, s.label, s.negative, s.neutral, s.positive, s.score "
+            "SELECT t.*, s.label, s.negative, s.neutral, s.positive, s.score, s.model "
             "FROM tweets t JOIN sentiment s ON s.tweet_id = t.tweet_id ORDER BY t.created_at"
         )
         df = pd.read_sql_query(sql, self.conn)

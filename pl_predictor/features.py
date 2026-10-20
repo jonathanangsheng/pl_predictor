@@ -15,6 +15,15 @@ MIN_MATCHES = 5  # fewer recent matches than this -> form is NaN (the model impu
 LOOKBACK = pd.Timedelta(days=400)
 
 FEATURES = ["elo_diff"] + [f"diff_{stat}" for stat in ROLLING]
+FEATURE_LABELS = {
+    "elo_diff": "Elo",
+    "diff_goals_for": "goals scored",
+    "diff_goals_against": "goals conceded",
+    "diff_shots_for": "shots",
+    "diff_shots_against": "shots faced",
+    "diff_sot_for": "shots on target",
+    "diff_sot_against": "on target faced",
+}
 
 
 def _side(rows: pd.DataFrame, side: str) -> pd.DataFrame:

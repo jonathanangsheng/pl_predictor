@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from pl_predictor.fixtures import Fixture, load_fixtures
+from pl_predictor.fixtures import Fixture, fpl_fixture
 from pl_predictor.storage import Store
 from pl_predictor.teams import load_teams
 
@@ -17,7 +17,10 @@ def teams():
 
 @pytest.fixture(scope="session")
 def fixtures(teams):
-    return load_fixtures(ROOT / "config" / "fixtures.csv", teams)
+    """A few fixtures as `pl-predictor` builds them from FPL (the tests stay offline)."""
+    ko = datetime(2026, 10, 17, 11, 30, tzinfo=timezone.utc)
+    pairs = [("EVE", "CHE"), ("BRE", "LIV"), ("FUL", "HUL"), ("NFO", "ARS")]
+    return [fpl_fixture(7, ko, home, away, teams) for home, away in pairs]
 
 
 @pytest.fixture

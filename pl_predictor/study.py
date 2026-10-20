@@ -14,7 +14,7 @@ from sklearn.pipeline import make_pipeline
 
 from .fixtures import SIDE_TWEETS
 from .matches import KEY, ODDS, kickoff_keys
-from .model import FEATURES, demargin, per_match_log_loss, proba, stage1, trainable
+from .model import FEATURES, demargin, per_match_log_loss, proba, stage1, stage1_proba, trainable
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ def oof_stage1(
         start = rows.loc[idx[block[0]], "date"]
         train = trainable(rows) & (rows["date"] < start)
         model = stage1().fit(feats.loc[train, FEATURES], rows.loc[train, "result"])
-        out[block] = proba(model, feats.loc[idx[block], FEATURES])
+        out[block] = stage1_proba(model, rows, feats, idx[block])
     return out
 
 

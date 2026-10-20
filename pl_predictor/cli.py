@@ -7,43 +7,64 @@ import logging
 import sys
 import time
 
-from .config import LOG_FORMAT, get_settings
+import requests
+
+from .config import LOG_FORMAT, ConfigError, get_settings, require_token
 
 
 def _cmd_fixtures(args, settings) -> None:
-    from .pipeline import collectable_fixtures, load_configured_fixtures
+    from .pipeline import collectable_fixtures, near, season_fixtures
 
-    fixtures = load_configured_fixtures(settings)
+    fixtures = near(season_fixtures(settings))
     active = {f.fixture_id for f in collectable_fixtures(fixtures, settings)}
     for f in fixtures:
         flag = "*" if f.fixture_id in active else " "
         kickoff = f"{f.kickoff:%a %d %b %H:%M}Z"
         print(f"{flag} {f.fixture_id:<16} MW{f.matchweek:<3} {kickoff}  {f.label}")
-    print("\n* = inside the recent-search window (collectable now)")
+    print(
+        "\nFixtures within a week of today. * = inside the recent-search window (collectable now)"
+    )
 
 
 def _cmd_query(args, settings) -> None:
-    from .pipeline import load_configured_fixtures
+    from .pipeline import check_fixture_ids, near, season_fixtures
 
-    for f in load_configured_fixtures(settings):
-        if args.fixture in (None, f.fixture_id):
-            print(f"{f.fixture_id}: {f.build_query(settings.max_query_length)}")
+    fixtures = season_fixtures(settings)
+    if args.fixture:
+        check_fixture_ids(fixtures, [args.fixture])
+        fixtures = [f for f in fixtures if f.fixture_id == args.fixture]
+    else:
+        fixtures = near(fixtures)
+    for f in fixtures:
+        print(f"{f.fixture_id}: {f.build_query(settings.max_query_length)}")
+
+
+FIXTURES_REFRESH_S = 15 * 60
 
 
 def _cmd_run(args, settings) -> None:
     from .collector import TweetCollector
-    from .pipeline import run_once
+    from .pipeline import run_once, season_fixtures
     from .sentiment import SentimentScorer
     from .storage import Store
 
-    if not settings.bearer_token:
-        sys.exit("X_BEARER_TOKEN is not set (see .env.example)")
+    collector = TweetCollector.from_bearer_token(require_token(settings))
     store = Store(settings.db_path)
-    collector = TweetCollector.from_bearer_token(settings.bearer_token)
     scorer = SentimentScorer(settings.model_name)
+    fixtures, refreshed = None, 0.0
     while True:
-        collected, scored = run_once(settings, store, collector, scorer, args.fixture)
-        logging.info("Run complete: %d collected, %d scored", collected, scored)
+        # The season list changes a few times a week: refresh it now and then, not every loop.
+        if time.monotonic() - refreshed >= FIXTURES_REFRESH_S:
+            try:
+                fixtures, refreshed = season_fixtures(settings), time.monotonic()
+            except requests.RequestException as exc:
+                if not args.watch:
+                    raise
+                kept = "keeping the last list" if fixtures else "retrying next loop"
+                logging.warning("FPL fixture refresh failed (%s); %s", exc, kept)
+        if fixtures is not None:
+            collected, scored = run_once(settings, store, collector, scorer, args.fixture, fixtures)
+            logging.info("Run complete: %d collected, %d scored", collected, scored)
         if not args.watch:
             break
         time.sleep(args.watch)
@@ -60,10 +81,10 @@ def _cmd_score(args, settings) -> None:
 
 def _cmd_demo(args, settings) -> None:
     from .demo import seed_demo
-    from .pipeline import load_configured_fixtures
+    from .pipeline import near, season_fixtures
     from .storage import Store
 
-    added = seed_demo(Store(args.db), load_configured_fixtures(settings), args.tweets)
+    added = seed_demo(Store(args.db), near(season_fixtures(settings)), args.tweets)
     logging.info("Seeded %d synthetic tweets into %s", added, args.db)
     logging.info("View it with: pl-predictor dashboard --db %s", args.db)
 
@@ -71,7 +92,9 @@ def _cmd_demo(args, settings) -> None:
 def _cmd_dashboard(args, settings) -> None:
     from .dashboard import create_app
 
-    create_app(args.db or settings.db_path).run(host=args.host, port=args.port, debug=args.debug)
+    create_app(args.db or settings.db_path, settings.teams_path).run(
+        host=args.host, port=args.port, debug=args.debug
+    )
 
 
 def _cmd_model(args, settings) -> None:
@@ -106,13 +129,15 @@ def _cmd_watch(args, settings) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="pl-predictor", description=__doc__)
-    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("fixtures", help="list configured fixtures").set_defaults(func=_cmd_fixtures)
+    sub.add_parser("fixtures", help="list fixtures within a week of today (from FPL)").set_defaults(
+        func=_cmd_fixtures
+    )
 
     p = sub.add_parser("query", help="print the X search query for each fixture")
-    p.add_argument("--fixture")
+    p.add_argument("--fixture", help="only this fixture id")
     p.set_defaults(func=_cmd_query)
 
     p = sub.add_parser("run", help="collect tweets for active fixtures and score them")
@@ -122,21 +147,28 @@ def main(argv: list[str] | None = None) -> None:
 
     sub.add_parser("score", help="score any unscored tweets").set_defaults(func=_cmd_score)
 
-    p = sub.add_parser("demo", help="seed synthetic data (no API or model needed)")
+    p = sub.add_parser(
+        "demo", help="seed synthetic tweets for this week's fixtures (no X or model)"
+    )
     p.add_argument("--tweets", type=int, default=600, help="tweets per fixture")
     # Kept out of the real database: demo tweet IDs would break since_id for real runs.
     p.add_argument("--db", default="data/demo.db", help="database to seed (default: %(default)s)")
     p.set_defaults(func=_cmd_demo)
 
     p = sub.add_parser("dashboard", help="start the Plotly Dash dashboard")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8050)
+    p.add_argument("--host", default="127.0.0.1", help="default: %(default)s")
+    p.add_argument("--port", type=int, default=8050, help="default: %(default)s")
     p.add_argument("--db", help="database to show (default: PLS_DB_PATH)")
-    p.add_argument("--debug", action="store_true")
+    p.add_argument("--debug", action="store_true", help="Dash debug mode with hot reload")
     p.set_defaults(func=_cmd_dashboard)
 
     p = sub.add_parser("model", help="match predictions: evaluate, train, predict, score, study")
-    p.add_argument("action", choices=["evaluate", "train", "predict", "score", "study"])
+    p.add_argument(
+        "action",
+        choices=["evaluate", "train", "predict", "score", "study"],
+        help="evaluate: walk-forward test; train: save models/model.joblib; predict: next "
+        "gameweek; score: logged predictions vs results; study: does sentiment help?",
+    )
     p.add_argument("--gameweek", type=int, help="predict this gameweek instead of the next one")
     p.set_defaults(func=_cmd_model)
 
@@ -146,8 +178,12 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=_cmd_watch)
 
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format=LOG_FORMAT,
-    )
-    args.func(args, get_settings())
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    if args.verbose:  # this package only: urllib3 at DEBUG drowns out our logs
+        logging.getLogger("pl_predictor").setLevel(logging.DEBUG)
+    try:
+        args.func(args, get_settings())
+    except ConfigError as exc:
+        sys.exit(str(exc))
+    except requests.RequestException as exc:
+        sys.exit(f"Could not reach a data source ({exc}); check the connection and retry.")

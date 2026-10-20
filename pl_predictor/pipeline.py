@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 import tweepy
 
 from .collector import END_TIME_BUFFER, SEARCH_LOOKBACK, TweetCollector
-from .config import Settings
-from .fixtures import Fixture, load_fixtures
+from .config import ConfigError, Settings
+from .fixtures import Fixture, fpl_fixture
+from .hooks import FPLHook
+from .matches import fpl_matches
 from .sentiment import SentimentScorer
 from .storage import Store
 from .teams import load_teams
@@ -21,8 +23,22 @@ log = logging.getLogger(__name__)
 FIRST_RUN_SLICES = 8
 
 
-def load_configured_fixtures(settings: Settings) -> list[Fixture]:
-    return load_fixtures(settings.fixtures_path, load_teams(settings.teams_path))
+def season_fixtures(settings: Settings) -> list[Fixture]:
+    """This season's scheduled fixtures from the FPL API, by kickoff."""
+    teams = load_teams(settings.teams_path)  # first, so a bad path fails before any download
+    hook = FPLHook()
+    matches = fpl_matches(hook.teams(), hook.fixtures())
+    scheduled = matches.dropna(subset=["gameweek", "kickoff"]).sort_values("kickoff")
+    return [
+        fpl_fixture(int(row.gameweek), row.kickoff.to_pydatetime(), row.home, row.away, teams)
+        for row in scheduled.itertuples()
+    ]
+
+
+def near(fixtures: Iterable[Fixture], days: int = 7, now: datetime | None = None) -> list[Fixture]:
+    """Fixtures kicking off within `days` either side of now, out of the ~380 in a season."""
+    now = now or datetime.now(timezone.utc)
+    return [f for f in fixtures if abs(f.kickoff - now) <= timedelta(days=days)]
 
 
 def collectable_fixtures(
@@ -94,26 +110,39 @@ def score_pending(store: Store, scorer: SentimentScorer, chunk_size: int = 512) 
     return total
 
 
+def check_fixture_ids(fixtures: list[Fixture], fixture_ids: Iterable[str]) -> None:
+    """Raise ConfigError naming any id that is not in `fixtures`."""
+    unknown = set(fixture_ids) - {f.fixture_id for f in fixtures}
+    if unknown:
+        raise ConfigError(
+            f"Unknown fixture id(s): {', '.join(sorted(unknown))} "
+            "(list them with `pl-predictor fixtures`)"
+        )
+
+
 def run_once(
     settings: Settings,
     store: Store,
     collector: TweetCollector,
     scorer: SentimentScorer,
     fixture_ids: Iterable[str] | None = None,
+    fixtures: list[Fixture] | None = None,
 ) -> tuple[int, int]:
-    """One collect + score pass. Returns (tweets collected, tweets scored)."""
-    fixtures = load_configured_fixtures(settings)
-    store.upsert_fixtures(fixtures)
-    if fixture_ids:
-        wanted = set(fixture_ids)
+    """One collect + score pass. Returns (tweets collected, tweets scored).
+
+    `fixtures` is the season list (season_fixtures); `run --watch` passes the one it refreshes.
+    """
+    if fixtures is None:
+        fixtures = season_fixtures(settings)
+    wanted = set(fixture_ids or ())
+    check_fixture_ids(fixtures, wanted)
+    if wanted:
         targets = [f for f in fixtures if f.fixture_id in wanted]
-        unknown = wanted - {f.fixture_id for f in targets}
-        if unknown:
-            raise KeyError(f"Unknown fixture id(s): {sorted(unknown)}")
     else:
         targets = collectable_fixtures(fixtures, settings)
         if not targets:
             log.warning("No fixtures inside the 7-day recent-search window")
+    store.upsert_fixtures(targets)
 
     collected = sum(collect_fixture(f, collector, store, settings) for f in targets)
     return collected, score_pending(store, scorer)

@@ -5,13 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pl-predictor"
 version = "0.1.0"
-description = "Fan sentiment analysis for English Premier League fixtures using X (Twitter), Hugging Face and Plotly Dash"
+description = "Premier League match predictions with fan sentiment from X (Twitter), Hugging Face and Plotly Dash"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "tweepy>=4.14",
-    "transformers>=4.44",
-    "torch>=2.3",
     "dash>=2.17",
     "dash-ag-grid>=31.0",
     "plotly>=5.22",
@@ -22,9 +20,12 @@ dependencies = [
     "PyYAML>=6.0",
     "requests>=2.31",
     "scikit-learn>=1.4",
+    "scipy>=1.11",
 ]
 
 [project.optional-dependencies]
+# Scoring real tweets (run, score, watch). The demo, dashboard and predictor work without it.
+sentiment = ["transformers>=4.44", "torch>=2.3"]
 dev = ["pytest>=8.0", "ruff>=0.5"]
 
 [project.scripts]

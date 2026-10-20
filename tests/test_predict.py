@@ -7,7 +7,7 @@ import requests
 
 from pl_predictor import model as m
 from pl_predictor import watch
-from pl_predictor.elo import elo_ratings, local_elo
+from pl_predictor.elo import local_elo
 from pl_predictor.features import FEATURES
 from pl_predictor.matches import (
     SchemaError,
@@ -26,7 +26,7 @@ from pl_predictor.study import (
 )
 
 TEAMS = [f"T{i:02d}" for i in range(20)]
-NAMES = pd.DataFrame({"code": TEAMS, "fdcouk": TEAMS, "clubelo": TEAMS, "fdorg": TEAMS})
+NAMES = pd.DataFrame({"code": TEAMS, "fdcouk": TEAMS, "fdorg": TEAMS})
 
 
 def synthetic_matches(seasons=range(2019, 2024), seed=0) -> pd.DataFrame:
@@ -69,8 +69,15 @@ def synthetic_matches(seasons=range(2019, 2024), seed=0) -> pd.DataFrame:
 @pytest.fixture(scope="module")
 def league():
     matches = synthetic_matches()
-    rows, feats, source = m.dataset(matches, elo_source="local", names=NAMES)
-    return matches, rows, feats, source
+    rows, feats = m.dataset(matches)
+    return matches, rows, feats
+
+
+@pytest.fixture(scope="module")
+def bundle(league):
+    """The trained model on the synthetic league (tests that change it take a copy)."""
+    _, rows, feats = league
+    return m.train(rows, feats)
 
 
 # ---------------------------------------------------------------- data
@@ -113,6 +120,8 @@ def _raw(new_format: bool) -> pd.DataFrame:
             "AvgCH": [1.9],
             "AvgCD": [3.6],
             "AvgCA": [4.0],
+            "HxG": [1.43],
+            "AxG": [0.71],
         }
     else:
         raw |= {"BbAvH": [2.1], "BbAvD": [3.4], "BbAvA": [3.6]}
@@ -123,12 +132,14 @@ def test_normalise_new_and_old_formats():
     new = normalise(_raw(True), 2024, NAMES)
     assert new.loc[0, ["avg_h", "close_h"]].tolist() == [2.0, 1.9]
     assert new.loc[0, "kickoff"] == pd.Timestamp("2024-08-17 14:00", tz="UTC")  # 15:00 BST
+    assert new.loc[0, ["home_xg", "away_xg"]].tolist() == [1.43, 0.71]
     old = normalise(_raw(False), 2010, NAMES)
     assert str(old["kickoff"].dt.tz) == "UTC"  # mixes with newer seasons
     assert (
         old.loc[0, "avg_h"] == 2.1
         and np.isnan(old.loc[0, "close_h"])
         and pd.isna(old.loc[0, "kickoff"])
+        and old[["home_xg", "away_xg"]].isna().all().all()  # no xG before 2026/27
     )
 
 
@@ -141,13 +152,13 @@ def test_schema_drift_is_reported():
 
 
 def test_features_are_as_of(league):
-    matches, rows, feats, _ = league
-    early = m.dataset(matches[matches["season"] <= 2020], elo_source="local", names=NAMES)[1]
+    matches, rows, feats = league
+    early = m.dataset(matches[matches["season"] <= 2020])[1]
     pd.testing.assert_frame_equal(early, feats.loc[early.index])
 
 
 def test_new_club_gets_nan_form_but_a_prediction(league):
-    matches, rows, feats, _ = league
+    matches, rows, feats = league
     upcoming = pd.DataFrame(
         {
             "season": [2024],
@@ -157,7 +168,7 @@ def test_new_club_gets_nan_form_but_a_prediction(league):
             "away": ["T00"],
         }
     )
-    rows2, feats2, _ = m.dataset(matches, upcoming, elo_source="local", names=NAMES)
+    rows2, feats2 = m.dataset(matches, upcoming)
     new = feats2.iloc[-1]
     assert np.isnan(new["diff_goals_for"]) and not np.isnan(new["elo_diff"])
     model = m.stage1().fit(feats.loc[rows["result"].notna(), FEATURES], rows["result"].dropna())
@@ -184,12 +195,13 @@ def test_local_elo_rewards_winners_and_carries_to_upcoming():
 
 
 def test_walk_forward_beats_elo_on_signal_and_never_trains_on_test(league):
-    _, rows, feats, _ = league
+    _, rows, feats = league
     report, y, probs, elo_probs = m.walk_forward(rows, feats)
     assert sorted(report["season"].unique()) == [2021, 2022, 2023]
     assert len(y) == len(probs) == 3 * 380 and np.allclose(probs.sum(axis=1), 1)
     summary = m.summarise(report)
     assert summary.loc["model", "log_loss"] < summary.loc["market (pre-match odds)", "log_loss"]
+    assert {"logistic regression", "dixon-coles"} <= set(summary.index)  # the blend's halves
 
 
 def test_metrics_and_demargin():
@@ -228,6 +240,9 @@ def test_upcoming_fixtures_picks_next_unplayed_gameweek():
                 ["2026-10-17T11:30Z", "2026-10-19T19:00Z", "2026-10-24T14:00Z", None]
             ),
             "started": [True, False, False, False],
+            "finished": [True, False, False, False],
+            "team_h_score": [1, None, None, None],
+            "team_a_score": [0, None, None, None],
         }
     )
     rows, unscheduled = upcoming_fixtures(FakeFPL(fx).teams(), fx)
@@ -494,13 +509,6 @@ def test_fdorg_fill_skips_on_unmapped_team():
     pd.testing.assert_frame_equal(out, table)
 
 
-def test_missing_clubelo_name_falls_back_to_local_elo():
-    rows = synthetic_matches(seasons=[2023]).head(20)
-    names = NAMES.assign(clubelo=None)
-    elo, source = elo_ratings(rows, names, "auto")
-    assert source == "local" and elo.notna().all().all()
-
-
 def test_score_uses_whole_latest_row():
     ko = pd.Timestamp("2024-08-17 14:00", tz="UTC")
     hist = pd.DataFrame(
@@ -539,9 +547,8 @@ def test_score_uses_whole_latest_row():
     assert row["p_home"] == 0.6 and np.isnan(row["home_tweets"]) and pd.isna(row["note"])
 
 
-def test_predict_accepts_naive_now(league):
-    matches, rows, feats, source = league
-    bundle = m.train(rows, feats, source)
+def test_predict_accepts_naive_now(league, bundle):
+    matches, rows, feats = league
     upcoming = pd.DataFrame(
         {
             "season": [2024],
@@ -551,7 +558,174 @@ def test_predict_accepts_naive_now(league):
             "away": ["T01"],
         }
     )
-    rows2, feats2, _ = m.dataset(matches, upcoming, elo_source="local", names=NAMES)
+    rows2, feats2 = m.dataset(matches, upcoming)
     pred = predict_upcoming(bundle, rows2, feats2, rows2.index[-1:], datetime(2024, 8, 17, 10))
     assert str(pred.loc[0, "predicted_at"].tz) == "UTC"
     assert pred[["p_home", "p_draw", "p_away"]].sum(axis=1).iloc[0] == pytest.approx(1)
+
+
+def test_market_odds_logged_next_to_prediction(league, bundle):
+    from pl_predictor.matches import upcoming_odds
+
+    matches, rows, feats = league
+    ko = pd.Timestamp("2024-08-17 14:00", tz="UTC")
+    upcoming = pd.DataFrame(
+        {
+            "season": 2024,
+            "date": ko.normalize().tz_localize(None),
+            "kickoff": ko,
+            "home": ["T00", "T02"],
+            "away": ["T01", "T03"],
+        }
+    )
+    raw = pd.DataFrame(
+        {
+            "Date": [ko.tz_localize(None)],
+            "HomeTeam": ["T00"],
+            "AwayTeam": ["T01"],
+            "AvgH": [2.0],
+            "AvgD": [4.0],
+            "AvgA": [4.0],
+        }
+    )
+    rows2, feats2 = m.dataset(matches, upcoming)
+    pred = predict_upcoming(
+        bundle, rows2, feats2, rows2.index[-2:], ko, odds=upcoming_odds(raw, NAMES)
+    )
+    assert pred.loc[0, ["mkt_home", "mkt_draw", "mkt_away"]].tolist() == pytest.approx(
+        [0.5, 0.25, 0.25]
+    )
+    assert pred.loc[1, ["mkt_home", "mkt_draw", "mkt_away"]].isna().all()  # not listed yet
+
+
+def test_history_with_old_columns_is_rewritten_aligned(tmp_path):
+    from pl_predictor.predict import HISTORY_COLS, read_history
+
+    path = tmp_path / "history.csv"
+    old_cols = [c for c in HISTORY_COLS if not c.startswith("mkt_")]
+    old = pd.DataFrame([dict.fromkeys(old_cols, 1)]).assign(
+        kickoff="2026-10-18 15:30:00+00:00", predicted_at="2026-10-18 13:00:00+00:00"
+    )
+    old.to_csv(path, index=False)
+    new = old.assign(mkt_home=0.5, mkt_draw=0.25, mkt_away=0.25, p_home=0.7)
+    append_history(new, path)
+    append_history(new, path)  # second append takes the plain path
+    hist = read_history(path)
+    assert list(hist.columns) == HISTORY_COLS and len(hist) == 3
+    assert hist["mkt_home"].isna().tolist() == [True, False, False]
+    assert hist["p_home"].tolist() == [1, 0.7, 0.7]
+
+
+def test_dixon_coles_gradient_matches_numeric(league):
+    from scipy.optimize import check_grad
+
+    from pl_predictor import dixon_coles as dc
+
+    _, rows, _ = league
+    design = dc._design(rows[rows["result"].notna()], pd.Timestamp("2020-01-01"))
+    x = np.random.default_rng(1).normal(0, 0.1, 2 * len(design.teams) + 3)
+    assert check_grad(lambda p: dc._nll(p, design)[0], lambda p: dc._nll(p, design)[1], x) < 1e-3
+
+
+def test_dixon_coles_rates_strong_clubs_higher(league):
+    from pl_predictor import dixon_coles as dc
+
+    _, rows, _ = league
+    played = rows[rows["result"].notna()]
+    margin = played["home_goals"] - played["away_goals"]
+    goal_diff = margin.groupby(played["home"]).sum().sub(margin.groupby(played["away"]).sum())
+    best, worst = goal_diff.idxmax(), goal_diff.idxmin()
+    ratings = dc.fit(played, pd.Timestamp("2021-08-01"))
+    p = dc.probs(ratings, best, worst)
+    assert p.sum() == pytest.approx(1) and p[0] > p[2]
+    assert (
+        ratings.attack[best] + ratings.defence[best]
+        > ratings.attack[worst] + ratings.defence[worst]
+    )
+
+
+def test_explanation_pushes_add_up_to_the_log_odds(league, bundle):
+    matches, rows, feats = league
+    X = feats.loc[rows.index[-5:], m.FEATURES]
+    pushes = m.explain(bundle["stage1"], X)
+    lr = bundle["stage1"][-1]
+    z = lr.decision_function(bundle["stage1"][:-1].transform(X))
+    home, away = list(lr.classes_).index("H"), list(lr.classes_).index("A")
+    intercept = lr.intercept_[home] - lr.intercept_[away]
+    assert np.allclose(pushes.sum(axis=1) + intercept, z[:, home] - z[:, away])
+    assert "Elo" in pushes.columns and "no recent form" in pushes.columns
+
+
+def test_prediction_logs_a_why_line(league, bundle):
+    matches, rows, feats = league
+    ko = pd.Timestamp("2024-08-17 14:00", tz="UTC")
+    upcoming = pd.DataFrame(
+        {
+            "season": [2024],
+            "date": [pd.Timestamp("2024-08-17")],
+            "kickoff": [ko],
+            "home": ["T00"],
+            "away": ["T01"],
+        }
+    )
+    rows2, feats2 = m.dataset(matches, upcoming)
+    why = predict_upcoming(bundle, rows2, feats2, rows2.index[-1:], ko).loc[0, "why"]
+    assert why.startswith("+ favours T00, - favours T01: ") and "expected goals" in why
+
+
+def test_append_never_rereads_a_current_history(tmp_path, monkeypatch):
+    from pl_predictor.predict import HISTORY_COLS
+
+    path = tmp_path / "history.csv"
+    row = pd.DataFrame([dict.fromkeys(HISTORY_COLS, 1)]).assign(
+        kickoff="2026-10-24 14:00:00+00:00", predicted_at="2026-10-23 13:00:00+00:00"
+    )
+    append_history(row, path)
+
+    def no_reread(*args, **kwargs):  # a reread is what lets concurrent writers drop rows
+        raise AssertionError("append_history reread the file")
+
+    monkeypatch.setattr("pl_predictor.predict.pd.read_csv", no_reread)
+    append_history(row, path)
+    assert path.read_text().count("\n") == 3  # header + 2 rows
+
+
+def test_explain_keeps_names_of_unlabelled_features(league):
+    _, rows, feats = league
+    played = m.trainable(rows)
+    X = feats.loc[played, m.FEATURES].assign(new_signal=np.linspace(-1, 1, int(played.sum())))
+    logistic = m.stage1().fit(X, rows.loc[played, "result"])
+    pushes = m.explain(logistic, X.tail(3))
+    assert "new_signal" in pushes.columns and "no recent form" in pushes.columns
+
+
+def test_stage2_rows_say_their_why_was_adjusted(league, bundle):
+    from pl_predictor.study import SENTIMENT
+
+    matches, rows, feats = league
+
+    class FixedStage2:
+        classes_ = np.array(["A", "D", "H"])
+
+        def predict_proba(self, X):
+            return np.tile([0.2, 0.3, 0.5], (len(X), 1))
+
+    bundle = {**bundle, "stage2": FixedStage2()}
+    ko = pd.Timestamp("2024-08-17 14:00", tz="UTC")
+    upcoming = pd.DataFrame(
+        {
+            "season": [2024],
+            "date": [pd.Timestamp("2024-08-17")],
+            "kickoff": [ko],
+            "home": ["T00"],
+            "away": ["T01"],
+        }
+    )
+    rows2, feats2 = m.dataset(matches, upcoming)
+    idx = rows2.index[-1:]
+    sent = pd.DataFrame(
+        {"home_n": [5], "away_n": [3], "note": [""], **dict.fromkeys(SENTIMENT, [0.1])}, index=idx
+    )
+    pred = predict_upcoming(bundle, rows2, feats2, idx, ko, sent, use_stage2=True)
+    assert pred.loc[0, "stage"] == 2 and pred.loc[0, "p_home"] == pytest.approx(0.5)
+    assert pred.loc[0, "why"].startswith("Sentiment-adjusted (stage 2). Stage 1: + favours T00")

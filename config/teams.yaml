@@ -4,6 +4,7 @@
 # - hashtags:  club hashtags (without the #)
 # - handles:   official X accounts (without the @)
 # - keywords:  plain-text names/nicknames; matched on word boundaries, case-insensitive
+# - colour:    primary kit colour (dashboard discs); lat/lon: stadium (dashboard mood map)
 #
 # Club list reflects the 2026/27 season. Update it after promotion/relegation.
 # Avoid ambiguous keywords ("Blues", "Reds", "City", "United", "Forest", "Palace",
@@ -12,120 +13,180 @@
 teams:
   - name: Arsenal
     code: ARS
+    colour: "#EF0107"
+    lat: 51.5549
+    lon: -0.1084
     hashtags: [Arsenal, AFC, COYG]
     handles: [Arsenal]
     keywords: [Arsenal, Gunners]
 
   - name: Aston Villa
     code: AVL
+    colour: "#670E36"
+    lat: 52.5092
+    lon: -1.8848
     hashtags: [AVFC, UTV]
     handles: [AVFCOfficial]
     keywords: [Aston Villa]
 
   - name: Bournemouth
     code: BOU
+    colour: "#DA291C"
+    lat: 50.7352
+    lon: -1.8383
     hashtags: [AFCB]
     handles: [afcbournemouth]
     keywords: [Bournemouth, Cherries]
 
   - name: Brentford
     code: BRE
+    colour: "#E30613"
+    lat: 51.4908
+    lon: -0.2887
     hashtags: [BrentfordFC]
     handles: [BrentfordFC]
     keywords: [Brentford]
 
   - name: Brighton
     code: BHA
+    colour: "#0057B8"
+    lat: 50.8616
+    lon: -0.0837
     hashtags: [BHAFC]
     handles: [OfficialBHAFC]
     keywords: [Brighton, Seagulls]
 
   - name: Chelsea
     code: CHE
+    colour: "#034694"
+    lat: 51.4816
+    lon: -0.191
     hashtags: [CFC, Chelsea]
     handles: [ChelseaFC]
     keywords: [Chelsea]
 
   - name: Coventry City
     code: COV
+    colour: "#59CBE8"
+    lat: 52.4481
+    lon: -1.4956
     hashtags: [PUSB]
     handles: [Coventry_City]
     keywords: [Coventry]
 
   - name: Crystal Palace
     code: CRY
+    colour: "#1B458F"
+    lat: 51.3983
+    lon: -0.0855
     hashtags: [CPFC]
     handles: [CPFC]
     keywords: [Crystal Palace]
 
   - name: Everton
     code: EVE
+    colour: "#003399"
+    lat: 53.4246
+    lon: -2.9997
     hashtags: [EFC, COYB]
     handles: [Everton]
     keywords: [Everton, Toffees]
 
   - name: Fulham
     code: FUL
+    colour: "#000000"
+    lat: 51.4749
+    lon: -0.2217
     hashtags: [FFC, FulhamFC]
     handles: [FulhamFC]
     keywords: [Fulham, Cottagers]
 
   - name: Hull City
     code: HUL
+    colour: "#F5A12D"
+    lat: 53.7462
+    lon: -0.3676
     hashtags: [hcafc]
     handles: [HullCity]
     keywords: [Hull City]
 
   - name: Ipswich Town
     code: IPS
+    colour: "#0044A9"
+    lat: 52.0545
+    lon: 1.1447
     hashtags: [ITFC]
     handles: [IpswichTown]
     keywords: [Ipswich, Tractor Boys]
 
   - name: Leeds United
     code: LEE
+    colour: "#FFCD00"
+    lat: 53.7778
+    lon: -1.5722
     hashtags: [LUFC, MOT]
     handles: [LUFC]
     keywords: [Leeds]
 
   - name: Liverpool
     code: LIV
+    colour: "#C8102E"
+    lat: 53.4308
+    lon: -2.9608
     hashtags: [LFC, YNWA]
     handles: [LFC]
     keywords: [Liverpool]
 
   - name: Manchester City
     code: MCI
+    colour: "#6CABDD"
+    lat: 53.4831
+    lon: -2.2004
     hashtags: [MCFC, ManCity]
     handles: [ManCity]
     keywords: [Man City, Manchester City]
 
   - name: Manchester United
     code: MUN
+    colour: "#DA291C"
+    lat: 53.4631
+    lon: -2.2913
     hashtags: [MUFC, GGMU]
     handles: [ManUtd]
     keywords: [Man Utd, Man United, Manchester United]
 
   - name: Newcastle United
     code: NEW
+    colour: "#241F20"
+    lat: 54.9756
+    lon: -1.6217
     hashtags: [NUFC]
     handles: [NUFC]
     keywords: [Newcastle, Toon, Magpies]
 
   - name: Nottingham Forest
     code: NFO
+    colour: "#DD0000"
+    lat: 52.94
+    lon: -1.1328
     hashtags: [NFFC]
     handles: [NFFC]
     keywords: [Nottingham Forest]
 
   - name: Sunderland
     code: SUN
+    colour: "#EB172B"
+    lat: 54.9146
+    lon: -1.3884
     hashtags: [SAFC]
     handles: [SunderlandAFC]
     keywords: [Sunderland, Black Cats]
 
   - name: Tottenham Hotspur
     code: TOT
+    colour: "#132257"
+    lat: 51.6043
+    lon: -0.0664
     hashtags: [THFC, COYS]
     handles: [SpursOfficial]
     keywords: [Tottenham, Spurs]

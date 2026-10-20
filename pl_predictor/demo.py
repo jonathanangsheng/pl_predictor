@@ -1,7 +1,7 @@
 """Seed the database with synthetic, pre-scored tweets so the dashboard runs offline.
 
-No API calls and no model download: useful for UI work and for trying the project
-before you have X API access.
+No X API and no model download (the fixture list comes from the FPL API): useful for UI work
+and for trying the project before you have X API access.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from .collector import RawTweet
 from .fixtures import Fixture
 from .sentiment import SentimentResult
 from .storage import Store
+
+DEMO_MODEL = "demo"  # sentiment.model value that marks synthetic tweets
 
 _TEMPLATES = {
     "positive": [
@@ -99,5 +101,5 @@ def seed_demo(
             )
             scores.append(result)
         total += store.insert_tweets(fixture, tweets)
-        store.save_sentiment([t.tweet_id for t in tweets], scores, model="demo")
+        store.save_sentiment([t.tweet_id for t in tweets], scores, model=DEMO_MODEL)
     return total

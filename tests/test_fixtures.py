@@ -1,12 +1,15 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 
+from pl_predictor import pipeline
+from pl_predictor.config import ConfigError, get_settings
+from pl_predictor.fixtures import fpl_fixture
 
-def test_config_files_load(teams, fixtures):
-    assert len(teams) == 20
-    assert fixtures and all(f.home.code != f.away.code for f in fixtures)
-    assert fixtures == sorted(fixtures, key=lambda f: f.kickoff)
+
+def test_teams_config_loads(teams):
+    assert len(teams) == 20 and all(t.colour.startswith("#") for t in teams.values())
 
 
 @pytest.mark.parametrize(
@@ -51,12 +54,39 @@ def test_query_too_short_raises(ars_mci):
         ars_mci.build_query(10)
 
 
-def test_csv_saved_with_bom_loads(tmp_path, teams):
-    from pl_predictor.fixtures import load_fixtures
+def test_fpl_fixture_id_and_unknown_club(teams):
+    ko = datetime(2026, 10, 24, 14, tzinfo=timezone.utc)
+    assert fpl_fixture(8, ko, "ARS", "EVE", teams).fixture_id == "mw08-ars-eve"
+    with pytest.raises(ConfigError, match="ZZZ"):
+        fpl_fixture(8, ko, "ARS", "ZZZ", teams)
 
-    path = tmp_path / "fixtures.csv"
-    path.write_text(
-        "fixture_id,matchweek,kickoff_utc,home,away\nx,1,2026-10-17T11:30:00Z,ARS,MCI\n",
-        encoding="utf-8-sig",
-    )
-    assert load_fixtures(path, teams)[0].fixture_id == "x"
+
+def test_season_fixtures_from_fpl(monkeypatch):
+    class FakeFPL:
+        def teams(self):
+            return pd.DataFrame({"id": [1, 2], "short_name": ["ARS", "EVE"]})
+
+        def fixtures(self):
+            return pd.DataFrame(
+                {
+                    "event": [9, 8, None],
+                    "team_h": [2, 1, 1],
+                    "team_a": [1, 2, 2],
+                    "kickoff_time": pd.to_datetime(
+                        ["2026-10-31 15:00", "2026-10-24 14:00", None], utc=True
+                    ),
+                    "team_h_score": None,
+                    "team_a_score": None,
+                    "finished": False,
+                    "started": False,
+                }
+            )
+
+    monkeypatch.setattr(pipeline, "FPLHook", FakeFPL)
+    fixtures = pipeline.season_fixtures(get_settings())
+    assert [f.fixture_id for f in fixtures] == [
+        "mw08-ars-eve",
+        "mw09-eve-ars",
+    ]  # unscheduled dropped
+    now = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    assert [f.fixture_id for f in pipeline.near(fixtures, days=3, now=now)] == ["mw08-ars-eve"]

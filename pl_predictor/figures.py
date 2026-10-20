@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
 from .fixtures import SIDE_TWEETS
+from .predict import MARKET_P, MODEL_P, latest_per_fixture, summary_table
 
 # Categorical slots: home / away. Sentiment uses its own violet<->red poles with a
 # gray midpoint so it never collides with the team colours.
@@ -196,45 +198,14 @@ def club_table(all_tweets: pd.DataFrame, fixtures: pd.DataFrame) -> pd.DataFrame
     return table.sort_values("score")
 
 
-def club_ranking(all_tweets: pd.DataFrame, fixtures: pd.DataFrame) -> go.Figure:
-    table = club_table(all_tweets, fixtures)
-    if table.empty:
-        return empty_figure()
-
-    colors = [
-        LABEL_COLORS["positive"] if s >= 0 else LABEL_COLORS["negative"] for s in table["score"]
-    ]
-    fig = go.Figure(
-        go.Bar(
-            y=table["club"],
-            x=table["score"],
-            orientation="h",
-            marker=dict(color=colors, line=dict(color=SURFACE, width=2)),
-            customdata=table["tweets"],
-            # round() + 0.0 turns -0.00 into +0.00
-            text=[f"{round(s, 2) + 0.0:+.2f}" for s in table["score"]],
-            textposition="outside",
-            textfont=dict(color=INK_2),
-            cliponaxis=False,
-            hovertemplate="<b>%{y}</b><br>Net sentiment %{x:+.2f}<br>%{customdata} tweets"
-            "<extra></extra>",
-        )
-    )
-    _base_layout(fig, height=max(260, 30 * len(table) + 80))
-    limit = max(0.25, table["score"].abs().max() * 1.4)
-    fig.update_xaxes(range=[-limit, limit], tickformat="+.1f", zeroline=True, zerolinewidth=1)
-    fig.update_yaxes(showgrid=False)
-    return fig
-
-
 def kpis(df: pd.DataFrame, fixture: pd.Series) -> list[tuple[str, str, str]]:
     """(label, value, caption) tuples for the stat tiles."""
     if df.empty:
         return [("Tweets scored", "0", "waiting for data")]
 
     def net(side: str) -> str:
-        sub = _for_side(df, side)
-        return f"{sub['score'].mean():+.2f}" if not sub.empty else "–"
+        value = _net(df, side)
+        return "–" if value is None else f"{value:+.2f}"
 
     live = df[df["phase"] == "live"]
     return [
@@ -245,12 +216,22 @@ def kpis(df: pd.DataFrame, fixture: pd.Series) -> list[tuple[str, str, str]]:
     ]
 
 
+def _net(df: pd.DataFrame, side: str) -> float | None:
+    """Mean net sentiment of one side's tweets, or None without any."""
+    scores = _for_side(df, side)["score"]
+    return None if scores.empty else round(float(scores.mean()), 2)
+
+
+def _most_engaged(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    engagement = df["like_count"] + df["retweet_count"] * 2 + df["reply_count"]
+    return df.assign(engagement=engagement).nlargest(n, "engagement")
+
+
 def top_tweets(df: pd.DataFrame, fixture: pd.Series, n: int = 15) -> list[dict]:
     if df.empty:
         return []
     names = {"home": fixture["home_name"], "away": fixture["away_name"], "both": "Both"}
-    top = df.assign(engagement=df["like_count"] + df["retweet_count"] * 2 + df["reply_count"])
-    top = top.nlargest(n, "engagement")
+    top = _most_engaged(df, n)
     return [
         {
             "time": row.created_at.strftime("%H:%M"),
@@ -262,3 +243,186 @@ def top_tweets(df: pd.DataFrame, fixture: pd.Series, n: int = 15) -> list[dict]:
         }
         for row in top.itertuples()
     ]
+
+
+def upcoming_predictions(history: pd.DataFrame, now: pd.Timestamp) -> list[dict]:
+    """Latest prediction per fixture that has not kicked off, as grid rows (percentages)."""
+    latest = latest_per_fixture(history[history["kickoff"] > now]).sort_values("kickoff")
+    rows = pd.DataFrame(
+        {
+            "kickoff": latest["kickoff"].dt.strftime("%a %d %b %H:%M"),
+            "fixture": latest["home"] + " v " + latest["away"],
+            **{col: (latest[col] * 100).round() for col in MODEL_P + MARKET_P},
+            "why": latest["why"],
+        }
+    ).astype(object)
+    return rows.where(rows.notna(), None).to_dict("records")  # no odds yet -> blank cell
+
+
+def track_record(summary: dict) -> list[dict]:
+    """predict.score() metrics as grid rows; NaN (no fixtures yet) becomes blank."""
+    table = summary_table(summary).reset_index(names="predictor").astype(object)
+    return table.where(table.notna(), None).to_dict("records")
+
+
+# ---------------------------------------------------------------- CENTRAL tab
+
+
+def league_table(matches: pd.DataFrame) -> list[dict]:
+    """Points table from finished matches; every club in the fixture list appears, played or not."""
+    done = matches[matches["finished"]]
+    sides = pd.concat(
+        [
+            pd.DataFrame(
+                {"club": done["home"], "gf": done["home_goals"], "ga": done["away_goals"]}
+            ),
+            pd.DataFrame(
+                {"club": done["away"], "gf": done["away_goals"], "ga": done["home_goals"]}
+            ),
+        ]
+    )
+    sides["points"] = np.select([sides["gf"] > sides["ga"], sides["gf"] == sides["ga"]], [3, 1], 0)
+    sides["gd"] = sides["gf"] - sides["ga"]
+    table = sides.groupby("club").agg(
+        played=("gf", "size"), gd=("gd", "sum"), gf=("gf", "sum"), points=("points", "sum")
+    )
+    clubs = sorted(set(matches["home"]) | set(matches["away"]))
+    table = table.reindex(clubs, fill_value=0).reset_index(names="club")
+    table = table.sort_values(["points", "gd", "gf", "club"], ascending=[False, False, False, True])
+    table.insert(0, "pos", range(1, len(table) + 1))
+    return table.astype({c: int for c in ("played", "gd", "points")}).to_dict("records")
+
+
+def next_match(matches: pd.DataFrame, club: str, now: pd.Timestamp) -> pd.Series | None:
+    """The club's next unstarted fixture with a kickoff time."""
+    mine = matches[
+        ((matches["home"] == club) | (matches["away"] == club))
+        & ~matches["started"]
+        & (matches["kickoff"] > now)
+    ]
+    return None if mine.empty else mine.sort_values("kickoff").iloc[0]
+
+
+def fixture_previews(all_tweets: pd.DataFrame, fixtures: pd.DataFrame, n: int = 5) -> list[dict]:
+    """Mood summary of the latest `n` fixtures that have tweets, newest first."""
+    with_data = fixtures[fixtures["fixture_id"].isin(all_tweets["fixture_id"])].tail(n)
+    previews = []
+    for fx in with_data.iloc[::-1].itertuples():
+        df = all_tweets[all_tweets["fixture_id"] == fx.fixture_id]
+        previews.append(
+            {
+                "home": fx.home_code,
+                "away": fx.away_code,
+                "title": f"{fx.home_name} v {fx.away_name}",
+                "kickoff": f"{fx.kickoff:%a %d %b %H:%M} UTC",
+                "home_net": _net(df, "home"),
+                "away_net": _net(df, "away"),
+                "tweets": len(df),
+            }
+        )
+    return previews
+
+
+def top_tweets_overall(all_tweets: pd.DataFrame, fixtures: pd.DataFrame, n: int = 3) -> list[dict]:
+    """Most-engaged tweets across every fixture, with the club they were attributed to."""
+    top = _most_engaged(all_tweets, n).merge(fixtures, on="fixture_id")
+    club = np.select(
+        [top["side"] == "home", top["side"] == "away"], [top["home_code"], top["away_code"]], ""
+    )
+    return [
+        {"club": c, "text": t, "likes": int(likes)}
+        for c, t, likes in zip(club, top["text"], top["like_count"], strict=True)
+    ]
+
+
+def mood_map(all_tweets: pd.DataFrame, fixtures: pd.DataFrame, teams: dict) -> go.Figure:
+    """Stadiums on a dark map; clubs with tweets glow by mean net sentiment."""
+    clubs = pd.DataFrame(
+        [(t.name, t.lat, t.lon) for t in teams.values() if t.lat is not None],
+        columns=["club", "lat", "lon"],
+    ).merge(club_table(all_tweets, fixtures), on="club", how="left")
+    scored = clubs[clubs["score"].notna()]
+    hover = scored["club"] + "<br>net " + scored["score"].map("{:+.2f}".format)
+    hover += "<br>" + scored["tweets"].astype(int).astype(str) + " tweets"
+    colour = dict(
+        color=scored["score"],
+        colorscale=[[0, LABEL_COLORS["negative"]], [0.5, OTHER], [1, "#9be22d"]],
+        cmin=-0.25,
+        cmax=0.25,
+    )
+    fig = go.Figure(
+        [
+            go.Scattergeo(
+                lat=clubs["lat"],
+                lon=clubs["lon"],
+                text=clubs["club"],
+                hoverinfo="text",
+                mode="markers",
+                marker=dict(size=6, color="#5d6b70"),
+            ),
+            go.Scattergeo(
+                lat=scored["lat"],
+                lon=scored["lon"],
+                hoverinfo="skip",
+                mode="markers",
+                marker=dict(size=30, opacity=0.25, **colour),
+            ),
+            go.Scattergeo(
+                lat=scored["lat"],
+                lon=scored["lon"],
+                text=hover,
+                hoverinfo="text",
+                mode="markers",
+                marker=dict(size=11, line=dict(width=1, color="#ffffff"), **colour),
+            ),
+        ]
+    )
+    fig.update_geos(
+        projection_type="mercator",
+        lataxis_range=[49.8, 55.9],
+        lonaxis_range=[-6.5, 2.2],
+        resolution=50,
+        showland=True,
+        landcolor="#2b3a40",
+        showocean=True,
+        oceancolor="#141b1f",
+        showcountries=True,
+        countrycolor="#3d4f56",
+        showcoastlines=True,
+        coastlinecolor="#3d4f56",
+        showlakes=False,
+        bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_layout(
+        height=360,
+        margin=dict(l=0, r=0, t=0, b=0),
+        showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT),
+    )
+    return fig
+
+
+def xg_table(matches: pd.DataFrame, last: int = 10) -> pd.DataFrame:
+    """Per club this season: mean xG for/against over its last `last` matches, and xG difference.
+
+    Only matches with xG count. Shown as context only; the model does not use xG yet.
+    """
+    season = matches[matches["season"] == matches["season"].max()]
+    season = season.dropna(subset=["home_xg", "away_xg"])
+    sides = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "club": season[side],
+                    "date": season["date"],
+                    "xg_for": season[f"{side}_xg"],
+                    "xg_against": season[f"{other}_xg"],
+                }
+            )
+            for side, other in (("home", "away"), ("away", "home"))
+        ]
+    ).sort_values("date")
+    recent = sides.groupby("club").tail(last).groupby("club")[["xg_for", "xg_against"]].mean()
+    totals = sides.groupby("club")[["xg_for", "xg_against"]].sum()
+    return recent.assign(xgd=totals["xg_for"] - totals["xg_against"])

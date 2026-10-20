@@ -13,11 +13,14 @@ DEFAULT_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
+class ConfigError(Exception):
+    """A setup problem the user can fix; the CLI prints it without a traceback."""
+
+
 @dataclass(frozen=True)
 class Settings:
     bearer_token: str | None
     db_path: Path
-    fixtures_path: Path
     teams_path: Path
     model_name: str
     pre_match_minutes: int
@@ -28,7 +31,6 @@ class Settings:
     # Predictor settings (matches/model/predict/study/watch)
     sentiment_since: date | None = None
     stage2: bool = False
-    elo_source: str = "auto"
 
 
 def get_settings() -> Settings:
@@ -37,7 +39,6 @@ def get_settings() -> Settings:
     return Settings(
         bearer_token=env("X_BEARER_TOKEN") or None,
         db_path=Path(env("PLS_DB_PATH", "data/pl_predictor.db")),
-        fixtures_path=Path(env("PLS_FIXTURES_PATH", "config/fixtures.csv")),
         teams_path=Path(env("PLS_TEAMS_PATH", "config/teams.yaml")),
         model_name=env("PLS_MODEL_NAME", DEFAULT_MODEL),
         pre_match_minutes=int(env("PLS_PRE_MATCH_MINUTES", "120")),
@@ -47,5 +48,10 @@ def get_settings() -> Settings:
         football_data_org_token=env("FOOTBALL_DATA_ORG_TOKEN") or None,
         sentiment_since=date.fromisoformat(s) if (s := env("PLS_SENTIMENT_SINCE")) else None,
         stage2=env("PLS_STAGE2", "0") == "1",
-        elo_source=env("PLS_ELO_SOURCE", "auto"),
     )
+
+
+def require_token(settings: Settings) -> str:
+    if not settings.bearer_token:
+        raise ConfigError("X_BEARER_TOKEN is not set (see .env.example)")
+    return settings.bearer_token

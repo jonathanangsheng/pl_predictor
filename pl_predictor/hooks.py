@@ -1,15 +1,13 @@
 """Hooks: thin clients for external football data sources, each returning pandas DataFrames.
 
-- FootballDataCoUkHook  football-data.co.uk  results, match stats, xG, betting odds (CSV)
+- FootballDataCoUkHook  football-data.co.uk  results, stats, xG, odds; upcoming odds (CSV)
 - FPLHook               Fantasy Premier League API  fixtures, table, player stats and xG
-- ClubEloHook           api.clubelo.com  daily Elo strength ratings (CSV)
 - FootballDataOrgHook   api.football-data.org v4  fixtures, results, standings (needs a token)
 """
 
 from __future__ import annotations
 
 import io
-from datetime import date
 
 import pandas as pd
 import requests
@@ -35,7 +33,7 @@ class _Hook:
 
 
 class FootballDataCoUkHook(_Hook):
-    base_url = "https://www.football-data.co.uk/mmz4281"
+    base_url = "https://www.football-data.co.uk"
 
     def results(self, season: int, division: str = "E0") -> pd.DataFrame:
         """One row per played match. `season` is the starting year (2026 = 2026/27); E0 = PL.
@@ -43,7 +41,15 @@ class FootballDataCoUkHook(_Hook):
         Column guide: https://www.football-data.co.uk/notes.txt
         """
         code = f"{season % 100:02d}{(season + 1) % 100:02d}"
-        raw = self._get(f"{code}/{division}.csv").content
+        return self._csv(f"mmz4281/{code}/{division}.csv")
+
+    def upcoming(self, division: str = "E0") -> pd.DataFrame:
+        """Next round of fixtures with bookmaker odds (AvgH/AvgD/AvgA, ...); updated midweek."""
+        df = self._csv("fixtures.csv")
+        return df[df["Div"] == division].reset_index(drop=True)
+
+    def _csv(self, path: str) -> pd.DataFrame:
+        raw = self._get(path).content
         try:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError:  # older seasons are Windows-1252
@@ -52,6 +58,11 @@ class FootballDataCoUkHook(_Hook):
         # Older seasons use two-digit years, so parse each date on its own.
         df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, format="mixed")
         return df
+
+
+def fpl_codes(teams: pd.DataFrame) -> dict[int, str]:
+    """FPLHook.teams() id -> club code."""
+    return dict(zip(teams["id"], teams["short_name"], strict=True))
 
 
 class FPLHook(_Hook):
@@ -96,26 +107,6 @@ class FPLHook(_Hook):
             for e in self._get(f"event/{gameweek}/live/").json()["elements"]
         ]
         return pd.DataFrame(rows)
-
-
-class ClubEloHook(_Hook):
-    # ClubElo serves plain HTTP; HTTPS isn't offered.
-    base_url = "http://api.clubelo.com"
-
-    def ratings(self, on: date | str | None = None) -> pd.DataFrame:
-        """Elo rating of every club on a date (default today). Filter Country == "ENG"."""
-        on = on or date.today()
-        return self._csv(on.isoformat() if isinstance(on, date) else on)
-
-    def club_history(self, club: str) -> pd.DataFrame:
-        """Full rating history for one club. Names have no spaces, e.g. "ManCity"."""
-        return self._csv(club.replace(" ", ""))
-
-    def _csv(self, path: str) -> pd.DataFrame:
-        df = pd.read_csv(io.StringIO(self._get(path).text))
-        for col in ("From", "To"):
-            df[col] = pd.to_datetime(df[col])
-        return df
 
 
 class FootballDataOrgHook(_Hook):

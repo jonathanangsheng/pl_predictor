@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from .hooks import FootballDataCoUkHook, FootballDataOrgHook
+from .hooks import FootballDataCoUkHook, FootballDataOrgHook, fpl_codes
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +40,11 @@ class UnmappedTeamError(KeyError):
     """A source uses a club name with no row in config/club_names.csv."""
 
 
+# A source we can do without failed: network error, malformed file (SchemaError is a ValueError)
+# or a club missing from club_names.csv (UnmappedTeamError is a KeyError).
+SOURCE_ERRORS = (requests.RequestException, ValueError, KeyError)
+
+
 def season_of(ts: pd.Timestamp | datetime) -> int:
     """Start year of the season containing `ts` (Europe/London date): Aug-Jul."""
     local = pd.Timestamp(ts)
@@ -52,6 +57,26 @@ def kickoff_keys(kickoff: pd.Series) -> tuple[pd.Series, pd.Series]:
     local = kickoff.dt.tz_convert(LONDON)
     season = local.dt.year - (local.dt.month < 8).astype(int)
     return season, local.dt.tz_localize(None).dt.normalize()
+
+
+def fpl_matches(teams: pd.DataFrame, fixtures: pd.DataFrame) -> pd.DataFrame:
+    """FPLHook.teams()/fixtures() as one row per fixture with club codes.
+
+    gameweek and kickoff are NaN/NaT for fixtures FPL has not scheduled yet.
+    """
+    codes = fpl_codes(teams)
+    return pd.DataFrame(
+        {
+            "gameweek": fixtures["event"],
+            "home": fixtures["team_h"].map(codes),
+            "away": fixtures["team_a"].map(codes),
+            "kickoff": pd.to_datetime(fixtures["kickoff_time"], utc=True),
+            "home_goals": fixtures["team_h_score"],
+            "away_goals": fixtures["team_a_score"],
+            "finished": fixtures["finished"].fillna(False).astype(bool),
+            "started": fixtures["started"].fillna(False).astype(bool),
+        }
+    )
 
 
 def club_names() -> pd.DataFrame:
@@ -77,6 +102,19 @@ def _pick_odds(raw: pd.DataFrame, options: list[tuple[str, str, str]]) -> pd.Dat
                 .set_axis(["h", "d", "a"], axis=1)
             )
     return pd.DataFrame(float("nan"), index=raw.index, columns=["h", "d", "a"])
+
+
+def upcoming_odds(raw: pd.DataFrame, names: pd.DataFrame) -> pd.DataFrame:
+    """FootballDataCoUkHook.upcoming() as KEY + (avg_h, avg_d, avg_a) with club codes."""
+    odds = pd.DataFrame(
+        {
+            "season": raw["Date"].map(season_of).values,
+            "home": to_codes(raw["HomeTeam"], "fdcouk", names).values,
+            "away": to_codes(raw["AwayTeam"], "fdcouk", names).values,
+        }
+    )
+    odds[ODDS["avg"]] = _pick_odds(raw, PRE_MATCH_ODDS).to_numpy()
+    return odds.drop_duplicates(KEY, keep="last")
 
 
 def normalise(raw: pd.DataFrame, season: int, names: pd.DataFrame, label: str = "") -> pd.DataFrame:
@@ -109,6 +147,8 @@ def normalise(raw: pd.DataFrame, season: int, names: pd.DataFrame, label: str = 
     for col, name in STATS.items():
         out[f"home_{name}"] = pd.to_numeric(raw[f"H{col}"], errors="coerce")
         out[f"away_{name}"] = pd.to_numeric(raw[f"A{col}"], errors="coerce")
+    for side, col in (("home", "HxG"), ("away", "AxG")):  # xG is published from 2026/27
+        out[f"{side}_xg"] = pd.to_numeric(raw[col], errors="coerce") if col in raw else float("nan")
     for prefix, options in (("avg", PRE_MATCH_ODDS), ("close", CLOSING_ODDS)):
         out[ODDS[prefix]] = _pick_odds(raw, options).to_numpy()
     return out.reset_index(drop=True)
@@ -179,8 +219,7 @@ def fill_from_fdorg(
                 "away_goals": done["score.fullTime.away"].values,
             }
         )
-    # UnmappedTeamError is a KeyError.
-    except (requests.RequestException, ValueError, KeyError) as exc:
+    except SOURCE_ERRORS as exc:
         log.warning(
             "football-data.org fill skipped (%s); newest match %s", exc, table["date"].max().date()
         )

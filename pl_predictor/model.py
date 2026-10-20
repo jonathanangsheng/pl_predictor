@@ -17,9 +17,10 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .elo import elo_ratings
-from .features import FEATURES, build_features
-from .matches import ODDS, club_names
+from . import dixon_coles
+from .elo import local_elo
+from .features import FEATURE_LABELS, FEATURES, build_features
+from .matches import ODDS
 
 log = logging.getLogger(__name__)
 
@@ -38,15 +39,11 @@ class ModelMissing(FileNotFoundError):
 
 
 def dataset(
-    matches: pd.DataFrame,
-    upcoming: pd.DataFrame | None = None,
-    elo_source: str = "auto",
-    names: pd.DataFrame | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, str]:
-    """Rows (played + upcoming), their features and the Elo source used."""
+    matches: pd.DataFrame, upcoming: pd.DataFrame | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Rows (played + upcoming) and their features."""
     rows = pd.concat([matches, upcoming], ignore_index=True)  # concat skips None
-    elo, source = elo_ratings(rows, club_names() if names is None else names, elo_source)
-    return rows, build_features(rows, elo), source
+    return rows, build_features(rows, local_elo(rows))
 
 
 # ---------------------------------------------------------------- probabilities and metrics
@@ -113,6 +110,39 @@ def stage1():
     )
 
 
+def blend(logistic_p: np.ndarray, dixon_coles_p: np.ndarray) -> np.ndarray:
+    """Stage 1: logistic regression and Dixon-Coles averaged 50/50 (weight fixed before testing)."""
+    return 0.5 * logistic_p + 0.5 * dixon_coles_p
+
+
+def stage1_proba(
+    logistic, rows: pd.DataFrame, feats: pd.DataFrame, idx: pd.Index, features=FEATURES
+) -> np.ndarray:
+    """Stage-1 probabilities for rows.loc[idx]: the logistic regression blended with Dixon-Coles.
+
+    Dixon-Coles is refitted each week on matches played before it.
+    """
+    return blend(proba(logistic, feats.loc[idx, features]), dixon_coles.predict(rows, idx))
+
+
+def explain(logistic, X: pd.DataFrame) -> pd.DataFrame:
+    """Each feature's push on the logistic regression's home-vs-away log-odds (+ favours home).
+
+    Push = (home weight - away weight) x the scaled feature, one row per match; the imputer's
+    missing-form indicators are summed into "no recent form".
+    """
+    prep, lr = logistic[:-1], logistic[-1]
+    classes = list(lr.classes_)
+    weight = lr.coef_[classes.index("H")] - lr.coef_[classes.index("A")]
+    names = prep.get_feature_names_out(X.columns)
+    pushes = pd.DataFrame(prep.transform(X) * weight, columns=names, index=X.index)
+    labels = [
+        "no recent form" if name.startswith("missingindicator_") else FEATURE_LABELS.get(name, name)
+        for name in names
+    ]
+    return pushes.T.groupby(labels, sort=False).sum().T
+
+
 def elo_baseline():
     return make_pipeline(SimpleImputer(), LogisticRegression(max_iter=1000))
 
@@ -141,8 +171,12 @@ def walk_forward(
         y_train, y_test = rows.loc[train, "result"], rows.loc[test, "result"]
         model = stage1().fit(feats.loc[train, FEATURES], y_train)
         elo = elo_baseline().fit(feats.loc[train, ["elo_diff"]], y_train)
+        logistic_p = proba(model, feats.loc[test, FEATURES])
+        dixon_coles_p = dixon_coles.predict(rows, rows.index[test])
         predictors = {
-            "model": proba(model, feats.loc[test, FEATURES]),
+            "model": blend(logistic_p, dixon_coles_p),
+            "logistic regression": logistic_p,
+            "dixon-coles": dixon_coles_p,
             "elo": proba(elo, feats.loc[test, ["elo_diff"]]),
             "market (pre-match odds)": demargin(rows.loc[test, ODDS["avg"]]),
             "closing odds (ceiling)": demargin(rows.loc[test, ODDS["close"]]),
@@ -177,7 +211,7 @@ def _git_sha() -> str:
         return "nogit"
 
 
-def train(rows: pd.DataFrame, feats: pd.DataFrame, elo_source: str) -> dict:
+def train(rows: pd.DataFrame, feats: pd.DataFrame) -> dict:
     played = trainable(rows)
     X, y = feats.loc[played, FEATURES], rows.loc[played, "result"]
     now = datetime.now(timezone.utc)
@@ -185,7 +219,6 @@ def train(rows: pd.DataFrame, feats: pd.DataFrame, elo_source: str) -> dict:
         "stage1": stage1().fit(X, y),
         "elo": elo_baseline().fit(X[["elo_diff"]], y),
         "features": list(FEATURES),
-        "elo_source": elo_source,
         "model_version": f"{now:%Y%m%d}-{_git_sha()}",
         "trained_on": int(played.sum()),
     }

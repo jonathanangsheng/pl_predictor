@@ -12,9 +12,14 @@ Built as flat modules in `pl_predictor/` (matches, elo, features, model, predict
   shots, shots on target). Walk-forward over 2023/24-2025/26: this model 0.9790 vs Elo 0.9814 (better every
   season); the planned HistGradientBoosting + calibration wrapper (1.014), the 69-feature set (0.993) and
   corners/fouls/table/rest-day features were all worse than Elo.
-- **Elo falls back to a local Elo** computed from results when ClubElo is unreachable (it returned 502 from this
-  network all day). The model records its Elo source and prediction uses the same one.
-- `FootballDataCoUkHook.upcoming()` is deferred (TODOS.md): history already carries pre-match odds for scoring.
+- **One fixture source** (2026-10-20): `run`, `fixtures`, `query` and `demo` read fixtures from the FPL API
+  like `watch` and `predict`; `config/fixtures.csv` and `PLS_FIXTURES_PATH` were removed.
+- **Stage 1 became a 50/50 blend with Dixon-Coles** (2026-10-20): 0.9746 over 2023/24-2025/26, better than
+  the logistic regression in 5 of 6 seasons from 2020/21 (mean -0.0047, 95% CI -0.0090 to -0.0003).
+- **Elo is computed from results** (`elo.py`). ClubElo returned 502 from this network throughout, so every result
+  here used local Elo; the ClubElo hook and fallback were removed on 2026-10-20.
+- `FootballDataCoUkHook.upcoming()` was deferred, then added on 2026-10-20: each prediction logs de-margined
+  market odds (`mkt_home/draw/away`) when football-data.co.uk lists the fixture.
 - Phase 0 collection is **not started**, at the user's request; `pl-predictor watch` replaces the scheduler step.
 - Not yet reviewed: DX and Eng phases.
 

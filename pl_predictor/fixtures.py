@@ -1,13 +1,12 @@
-"""Fixtures: loading, collection windows, match phases and X search queries."""
+"""Fixtures: collection windows, match phases and X search queries."""
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from itertools import zip_longest
-from pathlib import Path
 
+from .config import ConfigError
 from .teams import Team
 
 # Kickoff to final whistle including half-time and stoppage time, roughly.
@@ -84,28 +83,12 @@ class Fixture:
         return f"({' OR '.join(terms)}){suffix}"
 
 
-def _parse_kickoff(value: str) -> datetime:
-    ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-
-
-def load_fixtures(path: str | Path, teams: dict[str, Team]) -> list[Fixture]:
-    """Load fixtures.csv (fixture_id, matchweek, kickoff_utc, home, away)."""
-    fixtures = []
-    # utf-8-sig: Excel saves CSVs with a byte-order mark.
-    with Path(path).open(newline="", encoding="utf-8-sig") as fh:
-        for row in csv.DictReader(fh):
-            home, away = row["home"].strip().upper(), row["away"].strip().upper()
-            missing = {home, away} - teams.keys()
-            if missing:
-                raise KeyError(f"{row['fixture_id']}: unknown team code(s) {sorted(missing)}")
-            fixtures.append(
-                Fixture(
-                    fixture_id=row["fixture_id"].strip(),
-                    matchweek=int(row["matchweek"]),
-                    kickoff=_parse_kickoff(row["kickoff_utc"].strip()),
-                    home=teams[home],
-                    away=teams[away],
-                )
-            )
-    return sorted(fixtures, key=lambda f: f.kickoff)
+def fpl_fixture(
+    gameweek: int, kickoff: datetime, home: str, away: str, teams: dict[str, Team]
+) -> Fixture:
+    """One FPL fixture; its id (e.g. mw07-eve-che) is the same wherever it is built."""
+    missing = {home, away} - teams.keys()
+    if missing:
+        raise ConfigError(f"Unknown team code(s) {sorted(missing)}: add them to config/teams.yaml")
+    fixture_id = f"mw{gameweek:02d}-{home}-{away}".lower()
+    return Fixture(fixture_id, gameweek, kickoff, teams[home], teams[away])

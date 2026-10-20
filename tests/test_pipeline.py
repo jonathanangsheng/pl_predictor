@@ -14,7 +14,6 @@ def _settings(**overrides) -> Settings:
     base = dict(
         bearer_token="x",
         db_path=":memory:",
-        fixtures_path="",
         teams_path="",
         model_name="fake",
         pre_match_minutes=120,

@@ -89,3 +89,17 @@ def test_run_watch_keeps_last_fixture_list_through_an_outage(monkeypatch, tmp_pa
     with pytest.raises(Stop):
         main(["run", "--watch", "1"])
     assert seen == [fixtures, fixtures]  # second loop: refresh failed, last list reused
+
+
+def test_run_fetches_fixtures_right_after_boot(monkeypatch, tmp_path, fixtures):
+    from pl_predictor import cli, pipeline
+
+    seen = []
+    monkeypatch.setenv("PLS_DB_PATH", str(tmp_path / "pl.db"))
+    monkeypatch.setenv("X_BEARER_TOKEN", "test")
+    monkeypatch.setattr(SentimentScorer, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(pipeline, "season_fixtures", lambda settings: fixtures)
+    monkeypatch.setattr(pipeline, "run_once", lambda *a: seen.append(a[-1]) or (0, 0))
+    monkeypatch.setattr(cli.time, "monotonic", lambda: 5.0)  # e.g. a CI runner booted 5 s ago
+    main(["run"])
+    assert seen == [fixtures]

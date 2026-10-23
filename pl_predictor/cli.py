@@ -54,7 +54,7 @@ def _cmd_run(args, settings) -> None:
     fixtures, refreshed = None, 0.0
     while True:
         # The season list changes a few times a week: refresh it now and then, not every loop.
-        if time.monotonic() - refreshed >= FIXTURES_REFRESH_S:
+        if fixtures is None or time.monotonic() - refreshed >= FIXTURES_REFRESH_S:
             try:
                 fixtures, refreshed = season_fixtures(settings), time.monotonic()
             except requests.RequestException as exc:
